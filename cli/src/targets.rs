@@ -67,8 +67,11 @@ pub fn dylib_name(lib: &str) -> String {
 
 /// Generate binding untuk satu target ke `out_dir`.
 pub fn generate(t: &Target, bindgen: &Path, lib_path: &Path, out_dir: &Path) -> anyhow::Result<()> {
+    // bindgen ada di <crate>/target/release/; uniffi butuh cwd = folder crate.
+    let crate_dir = bindgen.ancestors().nth(3).unwrap_or(Path::new("."));
     let output = match t.generator {
         Generator::Uniffi(lang) => Command::new(bindgen)
+            .current_dir(crate_dir)
             .args(["generate", "--library"])
             .arg(lib_path)
             .args(["--language", lang, "--out-dir"])

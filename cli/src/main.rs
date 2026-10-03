@@ -1,3 +1,4 @@
+mod sources;
 mod targets;
 
 use std::collections::BTreeMap;
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use console::{style, Term};
-use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
+use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect, Select};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +27,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Buat project modul baru
-    Init { name: String },
+    Init {
+        name: String,
+        /// Bahasa sumber modul: rust, cpp, go. Tanpa flag = menu.
+        #[arg(long)]
+        lang: Option<String>,
+    },
     /// Build binding. Tanpa flag = menu interaktif.
     Build {
         /// Daftar target, dipisah koma (mis. python,go)
@@ -56,6 +62,8 @@ struct Config {
 #[derive(Deserialize)]
 struct Package {
     name: String,
+    /// Bahasa sumber; kalau kosong dideteksi dari isi folder.
+    source: Option<String>,
     #[serde(default = "default_backend")]
     backend: String,
 }
@@ -94,7 +102,7 @@ fn main() {
 
 fn run() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Init { name } => init(&name),
+        Cmd::Init { name, lang } => init(&name, lang),
         Cmd::Build { target, all, force, path } => build(&path, target, all, force),
         Cmd::Doctor => {
             doctor();
@@ -105,24 +113,161 @@ fn run() -> Result<()> {
 
 // ---------------------------------------------------------------- init
 
-fn init(name: &str) -> Result<()> {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Source {
+    Rust,
+    Cpp,
+    Go,
+}
+
+impl Source {
+    const ALL: [Source; 3] = [Source::Rust, Source::Cpp, Source::Go];
+
+    fn id(self) -> &'static str {
+        match self {
+            Source::Rust => "rust",
+            Source::Cpp => "cpp",
+            Source::Go => "go",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Source::Rust => "Rust",
+            Source::Cpp => "C++",
+            Source::Go => "Go",
+        }
+    }
+
+    fn parse(s: &str) -> Result<Source> {
+        Ok(match s.to_lowercase().as_str() {
+            "rust" | "rs" => Source::Rust,
+            "cpp" | "c++" | "cxx" => Source::Cpp,
+            "go" | "golang" => Source::Go,
+            "python" | "py" | "js" | "javascript" | "ts" | "typescript" => bail!(
+                "modul {s} belum didukung sebagai sumber.\n  \
+                 Bahasa ini butuh runtime sendiri, jadi jalurnya lewat Wasm (direncanakan).\n  \
+                 Untuk sekarang pakai rust, cpp, atau go."
+            ),
+            _ => bail!("bahasa sumber tidak dikenal: {s} (pilihan: rust, cpp, go)"),
+        })
+    }
+
+    /// Tebak dari isi folder kalau `source` tidak diisi di xlib.toml.
+    fn detect(project: &Path) -> Source {
+        if project.join("Cargo.toml").exists() {
+            Source::Rust
+        } else if project.join("go.mod").exists() {
+            Source::Go
+        } else {
+            Source::Cpp
+        }
+    }
+}
+
+fn init(name: &str, lang: Option<String>) -> Result<()> {
     let dir = Path::new(name);
     if dir.exists() {
         bail!("folder `{name}` sudah ada");
     }
+    let source = match lang {
+        Some(l) => Source::parse(&l)?,
+        None if Term::stderr().is_term() => {
+            let labels: Vec<_> = Source::ALL.iter().map(|s| s.label()).collect();
+            let i = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Modul mau ditulis pakai bahasa apa?")
+                .items(&labels)
+                .default(0)
+                .interact()?;
+            Source::ALL[i]
+        }
+        None => Source::Rust,
+    };
+
     let lib_name = name.replace('-', "_");
-    let fill = |s: &str| s.replace("{{name}}", name).replace("{{lib_name}}", &lib_name);
+    let fill = |s: &str| {
+        s.replace("{{name}}", name).replace("{{lib_name}}", &lib_name).replace("{{source}}", source.id())
+    };
 
-    fs::create_dir_all(dir.join("src"))?;
-    fs::write(dir.join("Cargo.toml"), fill(include_str!("../templates/Cargo.toml.tmpl")))?;
+    fs::create_dir_all(dir)?;
     fs::write(dir.join("xlib.toml"), fill(include_str!("../templates/xlib.toml.tmpl")))?;
-    fs::write(dir.join("uniffi-bindgen.rs"), include_str!("../templates/uniffi-bindgen.rs"))?;
-    fs::write(dir.join("src/lib.rs"), include_str!("../templates/src/lib.rs"))?;
-    fs::write(dir.join(".gitignore"), "/target\n/dist\n/.xlib\n")?;
+    match source {
+        Source::Rust => {
+            fs::create_dir_all(dir.join("src"))?;
+            fs::write(dir.join("Cargo.toml"), fill(include_str!("../templates/Cargo.toml.tmpl")))?;
+            fs::write(dir.join("uniffi-bindgen.rs"), include_str!("../templates/uniffi-bindgen.rs"))?;
+            fs::write(dir.join("src/lib.rs"), include_str!("../templates/src/lib.rs"))?;
+            fs::write(dir.join(".gitignore"), "/target\n/dist\n/.xlib\n")?;
+        }
+        Source::Cpp => {
+            fs::create_dir_all(dir.join("include"))?;
+            fs::create_dir_all(dir.join("src"))?;
+            fs::write(dir.join(format!("include/{lib_name}.hpp")), fill(include_str!("../templates/cpp/include/module.hpp")))?;
+            fs::write(dir.join(format!("src/{lib_name}.cpp")), fill(include_str!("../templates/cpp/src/module.cpp")))?;
+            fs::write(dir.join(".gitignore"), "/dist\n/.xlib\n")?;
+        }
+        Source::Go => {
+            fs::write(dir.join("go.mod"), format!("module {name}\n\ngo 1.22\n"))?;
+            fs::write(dir.join(format!("{lib_name}.go")), fill(include_str!("../templates/go/module.go")))?;
+            fs::write(dir.join(".gitignore"), "/dist\n/.xlib\n")?;
+        }
+    }
 
-    println!("{} project `{name}` dibuat", style("✔").green());
+    println!("{} project `{name}` ({}) dibuat", style("✔").green(), source.label());
     println!("  cd {name} && xlib build");
     Ok(())
+}
+
+/// Siapkan crate yang akan di-compile. Untuk Rust itu project-nya sendiri;
+/// untuk C++/Go, xlib membuat crate Rust tipis (shim) di `.xlib/shim`.
+fn prepare_source(project: &Path, source: Source, package: &str) -> Result<PathBuf> {
+    if source == Source::Rust {
+        return Ok(project.to_path_buf());
+    }
+    let sp = spinner(None, &format!("Baca modul {}", source.label()));
+    let t0 = Instant::now();
+    let shim = project.join(".xlib/shim");
+    let res: Result<sources::Parsed> = (|| {
+        let parsed = match source {
+            Source::Cpp => sources::cpp::parse(project)?,
+            Source::Go => sources::go::parse(project)?,
+            Source::Rust => unreachable!(),
+        };
+        if parsed.funcs.is_empty() {
+            bail!("tidak ada fungsi yang bisa diekspor");
+        }
+        fs::create_dir_all(&shim)?;
+        let build_rs = match source {
+            Source::Cpp => {
+                let headers = sources::cpp::headers(project)?;
+                let srcs = sources::cpp::sources(project)?;
+                let wrapper = shim.join("xlib_wrapper.cpp");
+                sources::write_if_changed(&wrapper, &sources::cpp::wrapper(&headers, &parsed.funcs))?;
+                sources::write_shim(&shim, package, &parsed.funcs, &sources::cpp::build_rs(project, &headers, &srcs, &wrapper), "cc = \"1\"")?;
+                return Ok(parsed);
+            }
+            Source::Go => {
+                let out = sources::go::build_archive(project, &project.join(".xlib/go"), &parsed.funcs)?;
+                sources::go::build_rs(&out)
+            }
+            Source::Rust => unreachable!(),
+        };
+        sources::write_shim(&shim, package, &parsed.funcs, &build_rs, "")?;
+        Ok(parsed)
+    })();
+    let parsed = match res {
+        Ok(p) => p,
+        Err(e) => {
+            sp.finish_and_clear();
+            return Err(e);
+        }
+    };
+    let names: Vec<_> = parsed.funcs.iter().map(|f| f.name.as_str()).collect();
+    done(&sp, format!("{} Modul {:<5} {} fungsi: {}  {}", style("✔").green(), source.label(), names.len(), names.join(", "), secs(t0)));
+    for s in &parsed.skipped {
+        println!("  {} {} dilewati: {}", style("⚠").yellow(), s.name, s.reason);
+    }
+    Ok(shim)
 }
 
 // ---------------------------------------------------------------- doctor
@@ -130,7 +275,13 @@ fn init(name: &str) -> Result<()> {
 fn doctor() {
     println!("{}", style("Toolchain").bold());
     let ok = |b: bool| if b { style("✔").green() } else { style("✖").red() };
-    println!("  {} cargo", ok(targets::on_path("cargo")));
+    println!("  {} cargo  (wajib)", ok(targets::on_path("cargo")));
+    println!("\n{}", style("Bahasa sumber").bold());
+    println!("  {} Rust", ok(targets::on_path("cargo")));
+    println!("  {} C++    (butuh c++ / g++ / clang++)", ok(["c++", "g++", "clang++"].iter().any(|c| targets::on_path(c))));
+    println!("  {} Go     (butuh go)", ok(Command::new("go").arg("version").output().is_ok()));
+    println!("  {} Python, JavaScript  (direncanakan via Wasm)", style("·").dim());
+    println!("\n{}", style("Target").bold());
     for t in ALL {
         match targets::check(t) {
             None => println!("  {} {:<11} siap", ok(true), t.label),
@@ -174,21 +325,26 @@ fn build(project: &Path, flags: Vec<String>, all: bool, force: bool) -> Result<(
     }
     state.last_targets = selected.iter().map(|t| t.id.to_string()).collect();
 
-    // 2. Compile core Rust sekali untuk semua target
+    // 2. Siapkan sumber (C++/Go dibungkus jadi crate Rust), lalu compile sekali
+    let source = match &cfg.package.source {
+        Some(s) => Source::parse(s)?,
+        None => Source::detect(&project),
+    };
+    let crate_dir = prepare_source(&project, source, &cfg.package.name)?;
     let lib_name = cfg.package.name.replace('-', "_");
-    let sp = spinner(None, "Compile Rust core");
+    let sp = spinner(None, "Compile core");
     let t0 = Instant::now();
     let out = Command::new("cargo")
-        .current_dir(&project)
+        .current_dir(&crate_dir)
         .args(["build", "--release", "--lib", "--bin", "uniffi-bindgen"])
         .output()?;
     if !out.status.success() {
         sp.finish_and_clear();
         bail!("compile gagal:\n{}", String::from_utf8_lossy(&out.stderr));
     }
-    done(&sp, format!("{} Rust core  {}", style("✔").green(), secs(t0)));
+    done(&sp, format!("{} Compile core  {}", style("✔").green(), secs(t0)));
 
-    let release = project.join("target/release");
+    let release = crate_dir.join("target/release");
     let lib_path = release.join(targets::dylib_name(&lib_name));
     let bindgen = release.join("uniffi-bindgen");
     let fingerprint = fingerprint(&lib_path)?;

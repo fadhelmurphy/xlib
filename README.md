@@ -1,6 +1,6 @@
 # xlib
 
-Tulis modul sekali di Rust, lalu pakai dari Python, Kotlin, Swift, Go, dan (nanti) JavaScript. Begitu saja idenya.
+Tulis modul sekali (di Rust, C++, atau Go), lalu pakai dari Python, Kotlin, Swift, Go, dan (nanti) JavaScript. Begitu saja idenya.
 
 ![demo](docs/demo.gif)
 
@@ -27,7 +27,15 @@ xlib init mathlib
 cd mathlib
 ```
 
-Template-nya sudah berisi contoh fungsi biasa, struct, object yang punya state, dan error. Silakan ubah `src/lib.rs` sesuai kebutuhan.
+Nanti akan ditanya modulnya mau ditulis pakai bahasa apa. Bisa juga langsung lewat flag:
+
+```bash
+xlib init mathlib --lang rust
+xlib init mathlib --lang cpp
+xlib init mathlib --lang go
+```
+
+Setiap template sudah berisi contoh fungsi yang siap di-build, termasuk satu fungsi yang bisa error. Tinggal ubah sesuai kebutuhan.
 
 Lalu build:
 
@@ -81,12 +89,47 @@ fun main() {
 
 Error dari Rust otomatis jadi exception di Python dan Kotlin, jadi tidak perlu cek kode error manual.
 
+## Bahasa sumber
+
+Modul bisa ditulis di tiga bahasa. Dari sisi pemakai tidak ada bedanya, karena semuanya keluar sebagai package Python, Kotlin, Swift, dan seterusnya.
+
+**Rust** adalah yang paling lengkap. Selain fungsi, kamu bisa mengekspor struct, object yang punya state, dan enum error. Tulis di `src/lib.rs`, lalu tandai dengan `#[uniffi::export]`.
+
+**C++**: tulis fungsi biasa di `include/*.hpp` dan implementasinya di `src/*.cpp`. Tidak perlu anotasi apa-apa. Fungsi yang tidak ditandai `noexcept` dianggap bisa melempar exception, dan exception itu muncul sebagai error di bahasa pemakai.
+
+```cpp
+namespace mathlib {
+int64_t add(int64_t a, int64_t b) noexcept;
+double mean(const std::vector<double>& values);   // boleh throw
+}
+```
+
+**Go**: tulis package biasa. Semua fungsi yang diawali huruf kapital ikut diekspor. Kalau fungsi mengembalikan `error`, di Python atau Kotlin error itu jadi exception. Panic juga ditangkap, jadi tidak akan membuat aplikasi pemakainya crash.
+
+```go
+func Add(a, b int64) int64 { ... }
+func Mean(values []float64) (float64, error) { ... }
+```
+
+Untuk C++ dan Go, tipe yang didukung untuk sekarang masih dasar: bool, integer, float/double, string, serta list of double atau int64. Fungsi yang memakai tipe lain akan dilewati, dan `xlib build` menyebutkan fungsi mana saja yang dilewati beserta alasannya. Struct dan class belum bisa.
+
+Bagaimana dengan Python dan JavaScript sebagai sumber? Belum bisa. Dua bahasa ini butuh runtime sendiri, jadi interpreter-nya harus ikut dibawa ke mana-mana. Jalan yang masuk akal adalah lewat Wasm, dan itu masih dalam rencana.
+
+### Cara kerjanya
+
+Untuk C++ dan Go, xlib membaca header atau file `.go`, lalu membuat dua hal secara otomatis di folder `.xlib/`:
+
+1. Wrapper C ABI di bahasa itu sendiri (`extern "C"` untuk C++, `//export` lewat cgo untuk Go). Wrapper ini juga mengurus konversi string, list, dan exception/error.
+2. Crate Rust tipis yang memanggil wrapper tadi dan mengekspornya lewat UniFFI.
+
+Setelah itu prosesnya sama persis dengan modul Rust. Karena itu, setiap target baru yang ditambahkan otomatis berlaku untuk ketiga bahasa sumber.
+
 ## Status
 
 Masih prototipe. Yang sudah saya coba sendiri:
 
-- **Python**: jalan, bisa di-`pip install`
-- **Kotlin**: jalan di JVM (butuh JNA)
+- **Python**: jalan, bisa di-`pip install`. Sudah dites dengan modul Rust, C++, dan Go.
+- **Kotlin**: jalan di JVM (butuh JNA). Sudah dites dengan modul Rust, C++, dan Go.
 - **Rust**: jalan, karena memang crate biasa
 - **Swift**: binding, header, dan modulemap sudah dibuat, tapi belum saya tes di Xcode
 - **Go**: butuh [`uniffi-bindgen-go`](https://github.com/NordSecurity/uniffi-bindgen-go), belum saya tes end-to-end
@@ -105,6 +148,8 @@ Dua hal ini sempat bikin saya bingung, jadi saya catat di sini:
 - [ ] Packaging Swift jadi XCFramework / Swift Package
 - [ ] Packaging Kotlin jadi AAR untuk Android
 - [ ] Perintah `xlib publish` ke PyPI, Maven, npm, dan seterusnya
+- [ ] Struct dan class untuk modul C++ dan Go
+- [ ] Python dan JavaScript sebagai bahasa sumber (lewat Wasm)
 - [ ] Backend Wasm Component Model sebagai alternatif UniFFI
 
 Desainnya memang disiapkan supaya backend bisa diganti. Kalau suatu saat Wasm Component Model sudah cukup matang, kode modul tidak perlu diubah, cukup ganti `backend` di `xlib.toml`.
@@ -113,11 +158,14 @@ Desainnya memang disiapkan supaya backend bisa diganti. Kalau suatu saat Wasm Co
 
 ```
 cli/                  kode CLI xlib
+cli/src/sources/      parser + generator untuk modul C++ dan Go
 cli/templates/        template yang dipakai `xlib init`
-examples/mathlib/     contoh modul + consumer di beberapa bahasa
+examples/mathlib/     contoh modul Rust + consumer di beberapa bahasa
+examples/cppmath/     contoh modul C++
+examples/gomath/      contoh modul Go
 ```
 
-Menambah bahasa baru cukup dengan menambah satu entri di `cli/src/targets.rs`.
+Menambah bahasa target baru cukup dengan menambah satu entri di `cli/src/targets.rs`.
 
 ## Lisensi
 
