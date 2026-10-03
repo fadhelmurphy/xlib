@@ -1,0 +1,9 @@
+[package]
+name = "rust-consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mathlib = { path = "../.." }
+
+[workspace]

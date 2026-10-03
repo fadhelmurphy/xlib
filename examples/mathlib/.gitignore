@@ -1,3 +1,5 @@
 /target
 /dist
 /.xlib
+consumers/rust/target
+consumers/kotlin/app.jar
