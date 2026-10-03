@@ -1,0 +1,20 @@
+[package]
+name = "mathlib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+name = "mathlib"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+uniffi = { version = "=0.31", features = ["cli"] }
+thiserror = "2"
+
+[profile.release]
+opt-level = 3
+lto = true

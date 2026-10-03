@@ -1,0 +1,13 @@
+[package]
+name = "mathlib"
+version = "0.1.0"
+
+# Backend saat ini: "uniffi". Nanti bisa "wasm" tanpa mengubah kode modul.
+backend = "uniffi"
+
+# Target default ketika `xlib build` dijalankan tanpa menu (CI / non-TTY).
+[targets]
+python = {}
+kotlin = {}
+swift  = {}
+go     = {}
