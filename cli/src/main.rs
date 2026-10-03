@@ -273,8 +273,11 @@ fn menu<'a>(cfg: &Config, state: &State) -> Result<Vec<&'a Target>> {
         .with_prompt("Pilih target build  (spasi = pilih, a = semua, enter = lanjut)")
         .items(&items)
         .defaults(&checked)
+        .report(false)
         .interact()?;
     let chosen: Vec<&Target> = picks.into_iter().map(|i| &ALL[i]).collect();
+    let names: Vec<_> = chosen.iter().map(|t| t.label).collect();
+    println!("{} Target: {}", style("✔").green(), style(names.join(", ")).cyan());
 
     let blocked: Vec<_> = chosen.iter().filter(|t| targets::blocking(t)).map(|t| t.label).collect();
     if !blocked.is_empty()
